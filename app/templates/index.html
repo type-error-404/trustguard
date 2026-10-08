@@ -3644,68 +3644,48 @@ async function analyzeFile(type){
     const file=selectedFiles[type];
 
     if(!file){
-
         showToast("Please choose a file first.");
-
         return;
     }
-
 
     const loading=document.getElementById(type+"Loading");
     const button=document.getElementById(type+"Analyze");
     const result=document.getElementById(type+"Result");
 
-
-    if(loading){
-        loading.style.display="block";
-    }
-
-    if(button){
-        button.style.display="none";
-    }
-
-    if(result){
-        result.style.display="none";
-    }
-
+    if(loading) loading.style.display="block";
+    if(button) button.style.display="none";
+    if(result) result.style.display="none";
 
     const formData=new FormData();
-
     formData.append("file",file);
-
 
     try{
 
-        /*
-         * IMPORTANT:
-         * This keeps the existing Flask backend endpoint.
-         * Your backend must continue to provide:
-         *
-         * POST /api/scan
-         */
+        const endpoint =
+            type==="audio"
+            ? "/api/audio"
+            : "/api/scan";
 
-        const response=await fetch("/api/scan",{
+        const response=await fetch(endpoint,{
             method:"POST",
             body:formData
         });
 
-
         if(!response.ok){
-
             throw new Error(
                 "Server returned HTTP "+response.status
             );
-
         }
-
 
         const data=await response.json();
 
-        renderResult(type,data);
+        if(type==="audio"){
+            renderAudioForensics(data);
+        }else{
+            renderResult(type,data);
+        }
 
-    }
-
-    catch(error){
+    }catch(error){
 
         console.error(error);
 
@@ -3741,24 +3721,174 @@ async function analyzeFile(type){
 
         }
 
-    }
+    }finally{
 
-    finally{
-
-        if(loading){
-            loading.style.display="none";
-        }
-
-        if(button){
-            button.style.display="block";
-        }
+        if(loading) loading.style.display="none";
+        if(button) button.style.display="block";
 
     }
 
 }
 
 
+/* ================= AUDIO FORENSICS ================= */
 
+function renderAudioForensics(data){
+
+    const result=document.getElementById("audioResult");
+
+    if(!result){
+        return;
+    }
+
+    result.style.display="block";
+
+    const status=String(
+        data.status || "INCONCLUSIVE"
+    ).toUpperCase();
+
+    const modelReady =
+        status==="MODEL_READY" &&
+        !data.model_error;
+
+    const features=data.features || {};
+    const wav=data.wav2vec2 || {};
+
+    let verdict="INCONCLUSIVE";
+
+    if(modelReady && data.label){
+        verdict=String(data.label).toUpperCase();
+    }else if(status==="MODEL_NOT_READY"){
+        verdict="MODEL NOT READY";
+    }
+
+    const confidence =
+        data.confidence !== undefined
+        ? Number(data.confidence)
+        : null;
+
+    const confidenceText =
+        confidence !== null && !Number.isNaN(confidence)
+        ? (confidence*100).toFixed(1)+"%"
+        : "?";
+
+    result.innerHTML=`
+
+        <div class="result-top">
+
+            <div>
+                <div class="verdict ${
+                    verdict==="FAKE" ? "fake" :
+                    verdict==="REAL" ? "real" : ""
+                }">
+                    ${escapeHTML(verdict)}
+                </div>
+
+                <div class="verdict-sub">
+                    ${
+                        modelReady
+                        ? "Audio forensic classification completed."
+                        : "Forensic features were extracted, but a trained audio classifier is not available."
+                    }
+                </div>
+            </div>
+
+            <div class="confidence">
+                <strong>${escapeHTML(confidenceText)}</strong>
+                <span>CONFIDENCE</span>
+            </div>
+
+        </div>
+
+        <div class="reason" style="margin-top:20px">
+
+            <strong>AUDIO FORENSIC EVIDENCE</strong>
+
+            <div style="margin-top:12px">
+                Duration:
+                ${escapeHTML(String(features.duration_seconds ?? "?"))} s
+            </div>
+
+            <div>
+                Sample rate:
+                ${escapeHTML(String(features.sample_rate ?? "?"))} Hz
+            </div>
+
+            <div>
+                RMS energy:
+                ${escapeHTML(String(features.rms_energy ?? "?"))}
+            </div>
+
+            <div>
+                Spectral centroid:
+                ${escapeHTML(String(features.spectral_centroid ?? "?"))} Hz
+            </div>
+
+            <div>
+                Zero-crossing rate:
+                ${escapeHTML(String(features.zero_crossing_rate ?? "?"))}
+            </div>
+
+            <div style="margin-top:12px">
+                MFCC features:
+                ${features.mfcc_mean
+                    ? escapeHTML(features.mfcc_mean.map(Number).map(x=>x.toFixed(3)).join(", "))
+                    : "?"}
+            </div>
+
+        </div>
+
+        <div class="reason" style="margin-top:16px">
+
+            <strong>MODEL STATUS</strong>
+
+            <div style="margin-top:10px">
+                ${
+                    modelReady
+                    ? "Trained audio classifier available."
+                    : "No trained audio classifier is currently available."
+                }
+            </div>
+
+            ${
+                data.model_error
+                ? `<div style="margin-top:8px;opacity:.75">
+                    ${escapeHTML(String(data.model_error))}
+                   </div>`
+                : ""
+            }
+
+        </div>
+
+        <div class="reason" style="margin-top:16px">
+
+            <strong>WAV2VEC2 REPRESENTATION</strong>
+
+            <div style="margin-top:10px">
+                ${
+                    wav.available
+                    ? "Representation extracted using "+escapeHTML(String(wav.model || "Wav2Vec2"))
+                    : "Wav2Vec2 representation unavailable in this environment."
+                }
+            </div>
+
+        </div>
+
+        <div class="reason" style="margin-top:16px;opacity:.75">
+
+            Assessment is based only on computed audio forensic features
+            and available model output. Feature values alone do not prove
+            that an audio recording was manipulated.
+
+        </div>
+    `;
+
+    result.scrollIntoView({
+        behavior:"smooth",
+        block:"start"
+    });
+
+}
 /* ================= RESULT ================= */
 
 function renderResult(type,data){
@@ -3832,8 +3962,8 @@ function renderResult(type,data){
 
     const riskScoreRaw = Number(data.risk_score ?? data.riskScore ?? fake);
     const riskScore = Math.max(0, Math.min(100, riskScoreRaw <= 1 ? riskScoreRaw * 100 : riskScoreRaw));
-    const riskLevel = riskScore >= 80 ? "CRITICAL" : riskScore >= 60 ? "HIGH" : riskScore >= 30 ? "MEDIUM" : "LOW";
-    const riskClass = riskScore >= 60 ? "risk-high" : riskScore >= 30 ? "risk-medium" : "risk-low";
+    const riskLevel = isLowConf ? "UNCERTAIN" : riskScore >= 80 ? "CRITICAL" : riskScore >= 60 ? "HIGH" : riskScore >= 30 ? "MEDIUM" : "LOW";
+    const riskClass = isLowConf ? "risk-medium" : riskScore >= 60 ? "risk-high" : riskScore >= 30 ? "risk-medium" : "risk-low";
 
     const reasonsHTML = reasons.length
         ? reasons.map(r => `<div class="reason">${escapeHTML(String(r))}</div>`).join("")
@@ -3902,7 +4032,7 @@ function renderResult(type,data){
             <div class="risk-decision ${riskClass}">
                 <span>RISK LEVEL</span>
                 <strong>${riskLevel}</strong>
-                <small>${riskScore.toFixed(2)} / 100 RISK SCORE</small>
+                <small>${isLowConf ? "LOW CONFIDENCE \u2014 " : ""}${riskScore.toFixed(2)} / 100 RISK SCORE</small>
             </div>
 
         </div>
@@ -4085,41 +4215,111 @@ function audioDemo(){
 
 /* ================= DOCUMENT ================= */
 
-function documentDemo(){
+async function documentDemo(){
 
     const file=selectedFiles.document;
 
     if(!file){
-
         showToast("Please choose a document first.");
-
         return;
     }
 
+    const report=document.getElementById("documentReport");
+    const status=report.querySelector(".report-status");
+    const rows=report.querySelectorAll(".report-row");
 
-    document.getElementById("docName")
-        .textContent=file.name;
-
-
-    document.getElementById("docType")
-        .textContent=file.type || "Unknown";
-
-
-    const report=
-        document.getElementById("documentReport");
-
-
+    document.getElementById("docName").textContent=file.name;
+    document.getElementById("docType").textContent=file.type || "Unknown";
     report.style.display="block";
 
+    if(status) status.textContent="ANALYZING...";
+    rows[2].querySelector("span:last-child").textContent="Running OCR analysis...";
+    rows[3].querySelector("span:last-child").textContent="Reading forensic metadata...";
+    rows[4].querySelector("span:last-child").textContent="Verifying SHA-256 integrity...";
 
-    report.scrollIntoView({
-        behavior:"smooth",
-        block:"start"
-    });
+    try{
+        const formData=new FormData();
+        formData.append("file",file);
 
+        const response=await fetch("/api/document",{
+            method:"POST",
+            body:formData
+        });
+
+        if(!response.ok) throw new Error("Server returned HTTP "+response.status);
+
+        const data=await response.json();
+        const verdict=String(data.verdict || "INCONCLUSIVE");
+        const risk=Number(data.risk_score ?? 0);
+
+        if(status) status.textContent=verdict;
+
+        rows[2].querySelector("span:last-child").textContent=
+            data.ocr && data.ocr.available
+            ? "OCR completed - "+(data.ocr.characters || 0)+" characters extracted"
+            : "OCR unavailable";
+
+        rows[3].querySelector("span:last-child").textContent=
+            data.exiftool && data.exiftool.available
+            ? "ExifTool metadata extracted"
+            : "Metadata extraction unavailable";
+
+        rows[4].querySelector("span:last-child").textContent=
+            data.sha256
+            ? "SHA-256 verified - "+data.sha256.substring(0,16)+"..."
+            : "Integrity hash unavailable";
+
+        let result=document.getElementById("documentForensicResult");
+
+        if(!result){
+            result=document.createElement("div");
+            result.id="documentForensicResult";
+            result.style.marginTop="18px";
+            result.style.padding="16px";
+            result.style.border="1px solid rgba(255,255,255,.12)";
+            result.style.borderRadius="12px";
+            result.style.background="rgba(255,255,255,.03)";
+            report.appendChild(result);
+        }
+
+        const reasons=Array.isArray(data.why_flagged) ? data.why_flagged : [];
+        const evidence=Array.isArray(data.evidence) ? data.evidence : [];
+
+        result.innerHTML=
+            "<strong>FINAL ASSESSMENT</strong>"+
+            "<div style='margin-top:8px'>"+escapeHTML(verdict)+" - Risk "+risk+"/100</div>"+
+            "<div style='margin-top:14px'><strong>WHY FLAGGED</strong></div>"+
+            "<ul style='margin:8px 0 0 18px'>"+
+            (reasons.length
+                ? reasons.map(x=>"<li>"+escapeHTML(String(x))+"</li>").join("")
+                : "<li>No computed forensic reason was returned.</li>")+
+            "</ul>"+
+            "<div style='margin-top:14px'><strong>COMPUTED EVIDENCE</strong></div>"+
+            "<ul style='margin:8px 0 0 18px'>"+
+            (evidence.length
+                ? evidence.map(x=>"<li>"+escapeHTML(typeof x==="object"
+                    ? Object.entries(x).map(([k,v])=>k+": "+String(v)).join(" - ")
+                    : String(x))+"</li>").join("")
+                : "<li>No additional evidence items returned.</li>")+
+            "</ul>"+
+            "<div style='margin-top:14px;font-size:.85em;opacity:.7'>"+
+            escapeHTML(data.message || "Assessment is based only on computed forensic signals.")+
+            "</div>";
+
+        report.scrollIntoView({behavior:"smooth",block:"start"});
+
+    }catch(error){
+
+        if(status) status.textContent="ANALYSIS ERROR";
+
+        rows[2].querySelector("span:last-child").textContent="Analysis failed";
+        rows[3].querySelector("span:last-child").textContent="Analysis failed";
+        rows[4].querySelector("span:last-child").textContent="Analysis failed";
+
+        showToast("Document forensic analysis failed: "+error.message);
+        console.error("TrustGuard document analysis error:",error);
+    }
 }
-
-
 
 /* ================= FORENSICS PANEL ================= */
 function fmtBytes(n){
